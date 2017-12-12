@@ -1,25 +1,25 @@
 package com.zendesk.maxwell.recovery;
 
-import com.zendesk.maxwell.*;
-import com.zendesk.maxwell.metrics.Metrics;
-import com.zendesk.maxwell.metrics.NoOpMetrics;
+import com.zendesk.maxwell.CaseSensitivity;
+import com.zendesk.maxwell.MaxwellMysqlConfig;
+import com.zendesk.maxwell.monitoring.Metrics;
+import com.zendesk.maxwell.monitoring.NoOpMetrics;
 import com.zendesk.maxwell.replication.BinlogConnectorReplicator;
 import com.zendesk.maxwell.replication.BinlogPosition;
-import com.zendesk.maxwell.replication.MaxwellReplicator;
+import com.zendesk.maxwell.replication.HeartbeatNotifier;
 import com.zendesk.maxwell.replication.Position;
 import com.zendesk.maxwell.replication.Replicator;
 import com.zendesk.maxwell.row.HeartbeatRowMap;
 import com.zendesk.maxwell.row.RowMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import snaq.db.ConnectionPool;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
-
-import snaq.db.ConnectionPool;
 
 public class Recovery {
 	static final Logger LOGGER = LoggerFactory.getLogger(Recovery.class);
@@ -29,20 +29,17 @@ public class Recovery {
 	private final MaxwellMysqlConfig replicationConfig;
 	private final String maxwellDatabaseName;
 	private final RecoverySchemaStore schemaStore;
-	private final boolean shykoMode;
 
 	public Recovery(MaxwellMysqlConfig replicationConfig,
 					String maxwellDatabaseName,
 					ConnectionPool replicationConnectionPool,
 					CaseSensitivity caseSensitivity,
-					RecoveryInfo recoveryInfo,
-					boolean shykoMode) {
+					RecoveryInfo recoveryInfo) {
 		this.replicationConfig = replicationConfig;
 		this.replicationConnectionPool = replicationConnectionPool;
 		this.recoveryInfo = recoveryInfo;
 		this.schemaStore = new RecoverySchemaStore(replicationConnectionPool, maxwellDatabaseName, caseSensitivity);
 		this.maxwellDatabaseName = maxwellDatabaseName;
-		this.shykoMode = shykoMode;
 	}
 
 	public Position recover() throws Exception {
@@ -60,35 +57,19 @@ public class Recovery {
 			Metrics metrics = new NoOpMetrics();
 
 			LOGGER.debug("scanning binlog: " + binlogPosition);
-			Replicator replicator;
-			if ( shykoMode ) {
-				replicator = new BinlogConnectorReplicator(
-						this.schemaStore,
-						null,
-						null,
-						replicationConfig,
-						0L, // server-id of 0 activates "mysqlbinlog" behavior where the server will stop after each binlog
-						maxwellDatabaseName,
-						metrics,
-						position,
-						true,
-						recoveryInfo.clientID
-						);
-			} else {
-				replicator = new MaxwellReplicator(
-						this.schemaStore,
-						null,
-						null,
-						replicationConfig,
-						0L, // server-id of 0 activates "mysqlbinlog" behavior where the server will stop after each binlog
-						false,
-						maxwellDatabaseName,
-						metrics,
-						position,
-						true,
-						recoveryInfo.clientID
-						);
-			}
+			Replicator replicator = new BinlogConnectorReplicator(
+					this.schemaStore,
+					null,
+					null,
+					replicationConfig,
+					0L, // server-id of 0 activates "mysqlbinlog" behavior where the server will stop after each binlog
+					maxwellDatabaseName,
+					metrics,
+					position,
+					true,
+					recoveryInfo.clientID,
+					new HeartbeatNotifier()
+			);
 
 			replicator.setFilter(new RecoveryFilter(this.maxwellDatabaseName));
 

@@ -6,7 +6,6 @@ import com.zendesk.maxwell.producer.AbstractProducer;
 import com.zendesk.maxwell.recovery.Recovery;
 import com.zendesk.maxwell.recovery.RecoveryInfo;
 import com.zendesk.maxwell.replication.BinlogConnectorReplicator;
-import com.zendesk.maxwell.replication.MaxwellReplicator;
 import com.zendesk.maxwell.replication.Position;
 import com.zendesk.maxwell.replication.Replicator;
 import com.zendesk.maxwell.schema.MysqlPositionStore;
@@ -27,8 +26,12 @@ public class Maxwell implements Runnable {
 	static final Logger LOGGER = LoggerFactory.getLogger(Maxwell.class);
 
 	public Maxwell(MaxwellConfig config) throws SQLException {
-		this.config = config;
-		this.context = new MaxwellContext(this.config);
+		this(new MaxwellContext(config));
+	}
+
+	protected Maxwell(MaxwellContext context) throws SQLException {
+		this.config = context.getConfig();
+		this.context = context;
 		this.context.probeConnections();
 	}
 
@@ -62,8 +65,7 @@ public class Maxwell implements Runnable {
 				config.databaseName,
 				this.context.getReplicationConnectionPool(),
 				this.context.getCaseSensitivity(),
-				recoveryInfo,
-				this.config.shykoMode
+				recoveryInfo
 			);
 
 			recoveredPosition = masterRecovery.recover();
@@ -83,8 +85,6 @@ public class Maxwell implements Runnable {
 				);
 
 				oldServerSchemaStore.clone(context.getServerID(), recoveredPosition);
-
-				positionStore.delete(recoveryInfo.serverID, recoveryInfo.clientID, recoveryInfo.position);
 			}
 		}
 		return recoveredPosition;
@@ -107,10 +107,12 @@ public class Maxwell implements Runnable {
 				}
 			}
 
-			if (initial != null) {
-				/* if the initial position didn't come from the store, store it */
-				context.getPositionStore().set(initial);
-			}
+			/* if the initial position didn't come from the store, store it */
+			context.getPositionStore().set(initial);
+		}
+
+		if (config.masterRecovery) {
+			this.context.getPositionStore().cleanupOldRecoveryInfos();
 		}
 
 		return initial;
@@ -131,12 +133,15 @@ public class Maxwell implements Runnable {
 	}
 
 	protected void onReplicatorStart() {}
+	protected void onReplicatorEnd() {}
+
 	private void start() throws Exception {
 		try {
 			startInner();
 		} catch ( Exception e) {
 			this.context.terminate(e);
 		} finally {
+			onReplicatorEnd();
 			this.terminate();
 		}
 
@@ -172,10 +177,7 @@ public class Maxwell implements Runnable {
 		MysqlSchemaStore mysqlSchemaStore = new MysqlSchemaStore(this.context, initPosition);
 		mysqlSchemaStore.getSchema(); // trigger schema to load / capture before we start the replicator.
 
-		if ( this.config.shykoMode )
-			this.replicator = new BinlogConnectorReplicator(mysqlSchemaStore, producer, bootstrapper, this.context, initPosition);
-		else
-			this.replicator = new MaxwellReplicator(mysqlSchemaStore, producer, bootstrapper, this.context, initPosition);
+		this.replicator = new BinlogConnectorReplicator(mysqlSchemaStore, producer, bootstrapper, this.context, initPosition);
 
 		bootstrapper.resume(producer, replicator);
 
